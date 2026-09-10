@@ -235,7 +235,8 @@ def episodic_memory_intrinsic_rewards(
   indices = (jnp.arange(embeddings.shape[0]) + start_index) % memory.shape[0]
   memory = jnp.asarray(memory).at[indices].set(embeddings)
 
-  nn_distances_sq = knn_query_result.neighbor_neg_distances
+  # knn_query returns negated distances, flip the sign back to get d²(xₖ, x).
+  nn_distances_sq = -knn_query_result.neighbor_neg_distances
 
   # Unpack running distance statistics, and update the running mean dₘ²
   distance_sum = intrinsic_reward_state.distance_sum
