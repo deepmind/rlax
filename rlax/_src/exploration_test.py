@@ -115,6 +115,25 @@ class EMIntrinsicRewardTest(parameterized.TestCase):
     np.testing.assert_array_less(low_reward, high_reward)
 
   @chex.all_variants()
+  def test_novelty_reward_with_small_embeddings(self):
+    """Check novelty is still detected when distances stay below `constant`."""
+
+    @self.variant  # pyrefly: ignore[missing-attribute]
+    def episodic_memory_intrinsic_rewards(embeddings, reward_scale):
+      return exploration.episodic_memory_intrinsic_rewards(
+          embeddings, self.num_neighbors, reward_scale, max_memory_size=10)
+
+    identical_embeddings = np.array([[0., 0.], [0., 0.]])
+    novel_embeddings = np.array([[1e-2, 1e-2], [-2e-2, 2e-2]])
+    low_reward, _ = episodic_memory_intrinsic_rewards(
+        identical_embeddings, self.reward_scale)
+    high_reward, state = episodic_memory_intrinsic_rewards(
+        novel_embeddings, self.reward_scale)
+    # Distances are squared, so the running sum of them cannot be negative.
+    np.testing.assert_array_less(0., np.array(state.distance_sum))
+    np.testing.assert_array_less(low_reward, high_reward)
+
+  @chex.all_variants()
   def test_custom_memory(self):
     """Check that embeddings are added appropriately to a custom memory."""
 
