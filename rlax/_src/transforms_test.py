@@ -14,6 +14,7 @@
 # ==============================================================================
 """Unit tests for `transforms.py`."""
 
+import decimal
 import functools
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -171,6 +172,47 @@ class TransformsTest(parameterized.TestCase):
         transformed, min_value, max_value, num_bins)
 
     np.testing.assert_almost_equal(value, restored, decimal=5)
+
+  @parameterized.product(eps=(0., 1e-3, 0.1), use_jit=(False, True))
+  def test_signed_parabolic_small_values(self, eps, use_jit):
+    x = jnp.array([-1e3, -1., -1e-4, -1e-8, 0., 1e-8, 1e-4, 1., 1e3],
+                  dtype=jnp.float32)
+    expected = []
+    with decimal.localcontext() as ctx:
+      ctx.prec = 60
+      e = decimal.Decimal(str(eps))
+      for value in np.asarray(x):
+        y = decimal.Decimal(str(abs(float(value))))
+        if eps == 0.:
+          result = y * (y + 2)
+        else:
+          z = ((1 + 4 * e * (e + 1 + y)).sqrt() - 1) / (2 * e)
+          result = z * z - 1
+        expected.append(np.sign(value) * float(result))
+    inverse = functools.partial(transforms.signed_parabolic, eps=eps)
+    if use_jit:
+      inverse = jax.jit(inverse)
+    np.testing.assert_allclose(inverse(x), expected, rtol=2e-6, atol=0.)
+
+  @parameterized.product(eps=(0., 1e-3, 0.1), use_jit=(False, True))
+  def test_signed_hyper_parabolic_small_value_roundtrip(self, eps, use_jit):
+    x = jnp.array([-1e-4, -1e-6, -1e-8, 0., 1e-8, 1e-6, 1e-4],
+                  dtype=jnp.float32)
+
+    def roundtrip(x):
+      return transforms.signed_parabolic(
+          transforms.signed_hyperbolic(x, eps), eps)
+
+    if use_jit:
+      roundtrip = jax.jit(roundtrip)
+    np.testing.assert_allclose(roundtrip(x), x, rtol=2e-6, atol=0.)
+
+  @parameterized.parameters(0., 1e-3, 0.1)
+  def test_signed_hyper_parabolic_gradients_at_zero(self, eps):
+    forward = functools.partial(transforms.signed_hyperbolic, eps=eps)
+    inverse = functools.partial(transforms.signed_parabolic, eps=eps)
+    np.testing.assert_allclose(jax.grad(forward)(0.), 0.5 + eps, rtol=1e-6)
+    np.testing.assert_allclose(jax.grad(inverse)(0.), 1 / (0.5 + eps), rtol=1e-6)
 
 
 if __name__ == '__main__':

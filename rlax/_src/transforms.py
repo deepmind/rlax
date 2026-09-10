@@ -60,7 +60,7 @@ def signed_expm1(x: Array) -> Array:
 def signed_hyperbolic(x: Array, eps: float = 1e-3) -> Array:
   """Signed hyperbolic transform, inverse of signed_parabolic."""
   chex.assert_type(x, float)
-  return jnp.sign(x) * (jnp.sqrt(jnp.abs(x) + 1) - 1) + eps * x
+  return x / (jnp.sqrt(jnp.abs(x) + 1) + 1) + eps * x
 
 
 def hyperbolic_sin(x: Array) -> Array:
@@ -78,8 +78,10 @@ def hyperbolic_arcsin(x: Array) -> Array:
 def signed_parabolic(x: Array, eps: float = 1e-3) -> Array:
   """Signed parabolic transform, inverse of signed_hyperbolic."""
   chex.assert_type(x, float)
-  z = jnp.sqrt(1 + 4 * eps * (eps + 1 + jnp.abs(x))) / 2 / eps - 1 / 2 / eps
-  return jnp.sign(x) * (jnp.square(z) - 1)
+  # Rationalize the quadratic solution to avoid cancellation near zero.
+  a = 1 + 2 * eps
+  z = 2 * x / (jnp.sqrt(a * a + 4 * eps * jnp.abs(x)) + a)
+  return z * (jnp.abs(z) + 2)
 
 
 def power(x: Array, p: float) -> Array:
