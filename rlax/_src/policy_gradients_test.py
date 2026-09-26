@@ -227,6 +227,123 @@ class ClippedSurrogatePGLossTest(parameterized.TestCase):
     np.testing.assert_allclose(actual, self.expected, atol=1e-4)
 
 
+class ClippedSurrogateBoundaryTest(parameterized.TestCase):
+
+  @parameterized.product(
+      epsilon=(0.125, 0.25, 0.5),
+      advantage=(-2.0, -1.0, 1.0, 2.0),
+      compiled=(False, True),
+  )
+  def test_gradient_at_differentiable_boundary(
+      self, epsilon, advantage, compiled
+  ):
+    # The lower boundary for positive advantages and the upper boundary for
+    # negative advantages are smooth points of the complete PPO objective.
+    ratio = 1.0 - epsilon if advantage > 0 else 1.0 + epsilon
+
+    def loss(r):
+      return policy_gradients.clipped_surrogate_pg_loss(
+          jnp.reshape(r, (1,)), jnp.array([advantage]), epsilon
+      )
+
+    gradient = jax.grad(loss)
+    if compiled:
+      gradient = jax.jit(gradient)
+    actual = gradient(jnp.array(ratio))
+    h = 2.0**-10
+    left = (loss(jnp.array(ratio)) - loss(jnp.array(ratio - h))) / h
+    right = (loss(jnp.array(ratio + h)) - loss(jnp.array(ratio))) / h
+    np.testing.assert_allclose([actual, left, right], -advantage, atol=1e-6)
+
+  @parameterized.parameters(False, True)
+  def test_forward_and_reverse_mode_agree_for_a_mixed_batch(self, compiled):
+    ratios = jnp.array([0.75, 1.25, 0.5, 1.5, 0.5, 1.5])
+    advantages = jnp.array([2.0, -2.0, 1.0, -1.0, -1.0, 1.0])
+    expected = jnp.array([-2.0, 2.0, -1.0, 1.0, 0.0, 0.0]) / 6
+
+    def loss(r):
+      return policy_gradients.clipped_surrogate_pg_loss(r, advantages, 0.25)
+
+    reverse = jax.grad(loss)
+    forward = lambda r: jax.jvp(loss, (r,), (jnp.ones_like(r),))[1]
+    if compiled:
+      reverse, forward = jax.jit(reverse), jax.jit(forward)
+    np.testing.assert_allclose(reverse(ratios), expected)
+    np.testing.assert_allclose(forward(ratios), expected.sum(), atol=1e-7)
+
+  @parameterized.product(
+      epsilon=(0.0, 0.25, 0.5), dtype=(jnp.float16, jnp.bfloat16, jnp.float32)
+  )
+  def test_forward_values_match_the_original_surrogate(self, epsilon, dtype):
+    ratios = jnp.array([0.0, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0], dtype=dtype)
+    advantages = jnp.array([-2.0, -1.0, 0.0, 1.0, 2.0], dtype=dtype)
+
+    def loss(a):
+      return policy_gradients.clipped_surrogate_pg_loss(
+          ratios, jnp.full_like(ratios, a), epsilon
+      )
+
+    actual = jax.jit(jax.vmap(loss))(advantages)
+    expected = jax.vmap(
+        lambda a: -jnp.mean(
+            jnp.fmin(
+                ratios * a, jnp.clip(ratios, 1.0 - epsilon, 1.0 + epsilon) * a
+            )
+        )
+    )(advantages)
+    np.testing.assert_array_equal(actual, expected)
+    self.assertEqual(actual.dtype, dtype)
+
+  @parameterized.parameters(False, True)
+  def test_advantage_stop_gradient_is_preserved(self, stop_gradient):
+    ratios = jnp.array([0.75, 1.25, 1.5, 0.5])
+    advantages = jnp.array([1.0, -1.0, 1.0, -1.0])
+
+    def loss(a):
+      return policy_gradients.clipped_surrogate_pg_loss(
+          ratios, a, 0.25, use_stop_gradient=stop_gradient
+      )
+
+    expected = (
+        np.zeros(4)
+        if stop_gradient
+        else -np.array([0.75, 1.25, 1.25, 0.75]) / 4
+    )
+    np.testing.assert_array_equal(jax.jit(jax.grad(loss))(advantages), expected)
+
+  def test_genuine_kinks_have_valid_subgradients(self):
+    for ratio, advantage in (
+        (1.25, 1.0),
+        (0.75, -1.0),
+        (1.0, 1.0),
+        (1.0, -1.0),
+    ):
+      epsilon = 0.0 if ratio == 1.0 else 0.25
+
+      def loss(r, advantage=advantage, epsilon=epsilon):
+        return policy_gradients.clipped_surrogate_pg_loss(
+            jnp.reshape(r, (1,)), jnp.array([advantage]), epsilon
+        )
+
+      gradient = float(jax.grad(loss)(jnp.array(ratio)))
+      self.assertGreaterEqual(gradient, min(0.0, -advantage))
+      self.assertLessEqual(gradient, max(0.0, -advantage))
+
+  def test_nonfinite_forward_values_keep_fmin_behavior(self):
+    for ratio in (jnp.nan, jnp.inf, -jnp.inf):
+      for advantage in (-1.0, 0.0, 1.0):
+        ratios, advantages = jnp.array([ratio]), jnp.array([advantage])
+        expected = -jnp.mean(
+            jnp.fmin(
+                ratios * advantages, jnp.clip(ratios, 0.75, 1.25) * advantages
+            )
+        )
+        actual = policy_gradients.clipped_surrogate_pg_loss(
+            ratios, advantages, 0.25
+        )
+        np.testing.assert_equal(actual, expected)
+
+
 if __name__ == '__main__':
   jax.config.update('jax_numpy_rank_promotion', 'raise')
   absltest.main()

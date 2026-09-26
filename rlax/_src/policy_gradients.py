@@ -288,5 +288,7 @@ def clipped_surrogate_pg_loss(
 
   adv_t = jax.lax.select(use_stop_gradient, jax.lax.stop_gradient(adv_t), adv_t)
   clipped_ratios_t = jnp.clip(prob_ratios_t, 1. - epsilon, 1. + epsilon)
-  clipped_objective = jnp.fmin(prob_ratios_t * adv_t, clipped_ratios_t * adv_t)
+  # Select the unclipped objective on ties. At the redundant clipping boundary
+  # the complete objective is differentiable, even though clip is not.
+  clipped_objective = jnp.fmin(clipped_ratios_t * adv_t, prob_ratios_t * adv_t)
   return -jnp.mean(clipped_objective)
