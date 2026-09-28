@@ -98,9 +98,7 @@ def transform_to_2hot(
   scalar = jnp.clip(scalar, min_value, max_value)
   scalar_bin = (scalar - min_value) / (max_value - min_value) * (num_bins - 1)
   lower, upper = jnp.floor(scalar_bin), jnp.ceil(scalar_bin)
-  lower_value = (lower / (num_bins - 1.0)) * (max_value - min_value) + min_value
-  upper_value = (upper / (num_bins - 1.0)) * (max_value - min_value) + min_value
-  p_lower = (upper_value - scalar) / (upper_value - lower_value + 1e-5)
+  p_lower = upper - scalar_bin
   p_upper = 1 - p_lower
   lower_one_hot = base.one_hot(
       lower, num_bins, dtype=scalar.dtype) * jnp.expand_dims(p_lower, -1)

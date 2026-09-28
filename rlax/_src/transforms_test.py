@@ -158,6 +158,45 @@ class TransformsTest(parameterized.TestCase):
     np.testing.assert_allclose(
         y, np.clip(np.array(TWO_HOT_SCALARS), -1, 1), atol=1e-4)
 
+  @parameterized.product(scale=[1e-6, 1e-3, 1.0], jitted=[False, True])
+  def test_twohot_interpolation_is_scale_invariant(self, scale, jitted):
+    encode = functools.partial(
+        transforms.transform_to_2hot,
+        min_value=-scale, max_value=scale, num_bins=5)
+    if jitted:
+      encode = jax.jit(encode)
+    values = jnp.array([-2., -1., -0.75, -0.25, 0., 0.75, 1., 2.]) * scale
+    expected = np.array([
+        [1., 0., 0., 0., 0.],
+        [1., 0., 0., 0., 0.],
+        [0.5, 0.5, 0., 0., 0.],
+        [0., 0.5, 0.5, 0., 0.],
+        [0., 0., 1., 0., 0.],
+        [0., 0., 0., 0.5, 0.5],
+        [0., 0., 0., 0., 1.],
+        [0., 0., 0., 0., 1.],
+    ])
+    probabilities = encode(values)
+    np.testing.assert_allclose(probabilities, expected, atol=3e-7)
+    restored = transforms.transform_from_2hot(
+        probabilities, -scale, scale, 5)
+    np.testing.assert_allclose(
+        restored / scale, jnp.clip(values / scale, -1., 1.), atol=3e-7)
+
+  @parameterized.product(scale=[1e-6, 1e-3, 1.0], jitted=[False, True])
+  def test_twohot_roundtrip_gradient_between_bins(self, scale, jitted):
+    def roundtrip(value):
+      probabilities = transforms.transform_to_2hot(
+          value[None], -scale, scale, 5)
+      return transforms.transform_from_2hot(
+          probabilities, -scale, scale, 5)[0]
+
+    derivative = jax.grad(roundtrip)
+    if jitted:
+      derivative = jax.jit(derivative)
+    np.testing.assert_allclose(
+        derivative(jnp.asarray(0.25 * scale)), 1., rtol=3e-7)
+
   def test_2hot_roundtrip(self):
     min_value = -1.0
     max_value = 1.0
