@@ -79,7 +79,10 @@ def create_ema(decay=0.999, pmean_axis_name=None):
     return decay * moment + (1 - decay) * mean
 
   def update_moments(tree, state):
-    squared_tree = jax.tree.map(jnp.square, tree)
+    # Match the mean's dtype before squaring to avoid integer overflow.
+    squared_tree = jax.tree.map(
+        lambda x: jnp.square(jnp.asarray(x, dtype=jnp.mean(x).dtype)), tree
+    )
     mu = jax.tree.map(_update, state.mu, tree)
     nu = jax.tree.map(_update, state.nu, squared_tree)
     state = EmaState(
