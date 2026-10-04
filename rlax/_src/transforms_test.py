@@ -15,6 +15,7 @@
 """Unit tests for `transforms.py`."""
 
 import functools
+import math
 from absl.testing import absltest
 from absl.testing import parameterized
 import chex
@@ -171,6 +172,75 @@ class TransformsTest(parameterized.TestCase):
         transformed, min_value, max_value, num_bins)
 
     np.testing.assert_almost_equal(value, restored, decimal=5)
+
+
+class LogitNumericsTest(parameterized.TestCase):
+
+  @parameterized.product(dtype=(np.float32, np.float64), compiled=(False, True))
+  def test_logit_values_near_probability_boundaries(self, dtype, compiled):
+    if dtype == np.float64 and not jax.config.x64_enabled:
+      self.skipTest('Double precision is disabled.')
+    small = 1e-200 if dtype == np.float64 else 1e-30
+    values = np.array(
+        [
+            np.finfo(dtype).tiny,
+            small,
+            1e-20,
+            0.25,
+            0.5,
+            0.75,
+            np.nextafter(dtype(1.0), dtype(0.0)),
+        ],
+        dtype=dtype,
+    )
+    x = jnp.asarray(values.reshape(1, -1))
+    logit = jax.jit(transforms.logit) if compiled else transforms.logit
+    expected = np.array(
+        [math.log(float(v) / (1.0 - float(v))) for v in values], dtype=dtype
+    ).reshape(x.shape)
+    actual = logit(x)
+    np.testing.assert_allclose(actual, expected, rtol=3e-6, atol=0.0)
+    self.assertEqual(actual.shape, x.shape)
+    self.assertEqual(actual.dtype, x.dtype)
+    # Check the inverse away from the normal/subnormal boundary.
+    np.testing.assert_allclose(
+        transforms.sigmoid(actual[:, 1:]), x[:, 1:], rtol=3e-6, atol=0.0
+    )
+
+  @parameterized.product(dtype=(np.float32, np.float64), compiled=(False, True))
+  def test_logit_derivatives_remain_finite_when_representable(
+      self, dtype, compiled
+  ):
+    if dtype == np.float64 and not jax.config.x64_enabled:
+      self.skipTest('Double precision is disabled.')
+    small = 1e-200 if dtype == np.float64 else 1e-30
+    x = jnp.asarray(
+        [small, 1e-20, 0.25, 0.5, np.nextafter(dtype(1.0), dtype(0.0))],
+        dtype=dtype,
+    )
+    expected = np.array(
+        [1.0 / (float(v) * (1.0 - float(v))) for v in np.asarray(x)]
+    )
+    gradient = jax.vmap(jax.grad(transforms.logit))
+    if compiled:
+      gradient = jax.jit(gradient)
+    actual = gradient(x)
+    self.assertTrue(np.all(np.isfinite(actual)))
+    np.testing.assert_allclose(actual, expected, rtol=3e-6, atol=0.0)
+    forward = lambda p: jax.jvp(transforms.logit, (p,), (jnp.ones_like(p),))[1]
+    if compiled:
+      forward = jax.jit(forward)
+    np.testing.assert_allclose(forward(x), expected, rtol=3e-6, atol=0.0)
+
+  @parameterized.parameters(False, True)
+  def test_logit_domain_endpoints(self, compiled):
+    logit = jax.jit(transforms.logit) if compiled else transforms.logit
+    values = jnp.asarray([-0.1, -0.0, 0.0, 0.5, 1.0, 1.1, jnp.nan])
+    np.testing.assert_allclose(
+        logit(values),
+        [np.nan, -np.inf, -np.inf, 0.0, np.inf, np.nan, np.nan],
+        equal_nan=True,
+    )
 
 
 if __name__ == '__main__':

@@ -42,7 +42,7 @@ def sigmoid(x: Numeric) -> Array:
 def logit(x: Array) -> Array:
   """Logit transform, inverse of sigmoid."""
   chex.assert_type(x, float)
-  return -jnp.log(1. / x - 1.)
+  return jnp.log(x) - jnp.log1p(-x)
 
 
 def signed_logp1(x: Array) -> Array:
