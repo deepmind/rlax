@@ -48,13 +48,16 @@ def logit(x: Array) -> Array:
 def signed_logp1(x: Array) -> Array:
   """Signed logarithm of x + 1."""
   chex.assert_type(x, float)
-  return jnp.sign(x) * jnp.log1p(jnp.abs(x))
+  # Both signed branches have derivative one at zero; sign(0) blocks it.
+  sign = jnp.where(x < 0, -jnp.ones_like(x), jnp.ones_like(x))
+  return sign * jnp.log1p(sign * x)
 
 
 def signed_expm1(x: Array) -> Array:
   """Signed exponential of x - 1, inverse of signed_logp1."""
   chex.assert_type(x, float)
-  return jnp.sign(x) * jnp.expm1(jnp.abs(x))
+  sign = jnp.where(x < 0, -jnp.ones_like(x), jnp.ones_like(x))
+  return sign * jnp.expm1(sign * x)
 
 
 def signed_hyperbolic(x: Array, eps: float = 1e-3) -> Array:
