@@ -568,6 +568,12 @@ def categorical_l2_project(
   chex.assert_rank([z_p, probs, z_q], 1)
   chex.assert_type([z_p, probs, z_q], float)
 
+  result_dtype = jnp.result_type(z_p, probs, z_q)
+  compute_dtype = jnp.promote_types(result_dtype, jnp.float32)
+  z_p = z_p.astype(compute_dtype)
+  z_q = z_q.astype(compute_dtype)
+  probs = probs.astype(compute_dtype)
+
   kp = z_p.shape[0]
   kq = z_q.shape[0]
 
@@ -585,9 +591,9 @@ def categorical_l2_project(
   z_q = z_q[:, None]  # pyrefly: ignore[bad-index]
   assert z_q.shape == (kq, 1)
 
-  # Ensure that we do not divide by zero, in case of atoms of identical value.
-  d_neg = jnp.where(d_neg > 0, 1. / d_neg, jnp.zeros_like(d_neg))
-  d_pos = jnp.where(d_pos > 0, 1. / d_pos, jnp.zeros_like(d_pos))
+  # Disable nonpositive gaps without forming reciprocals of tiny spacings.
+  d_neg = jnp.where(d_neg > 0, d_neg, jnp.inf)
+  d_pos = jnp.where(d_pos > 0, d_pos, jnp.inf)
 
   delta_qp = z_p - z_q  # clip(z_p)[j] - z_q[i]
   d_sign = (delta_qp >= 0.).astype(probs.dtype)
@@ -595,12 +601,13 @@ def categorical_l2_project(
   assert d_sign.shape == (kq, kp)
 
   # Matrix of entries sgn(a_ij) * |a_ij|, with a_ij = clip(z_p)[j] - z_q[i].
-  delta_hat = (d_sign * delta_qp * d_pos) - ((1. - d_sign) * delta_qp * d_neg)
+  delta_hat = (d_sign * delta_qp / d_pos) - ((1. - d_sign) * delta_qp / d_neg)
   probs = probs[None, :]  # pyrefly: ignore[bad-index]
   assert delta_hat.shape == (kq, kp)
   assert probs.shape == (1, kp)
 
-  return jnp.sum(jnp.clip(1. - delta_hat, 0., 1.) * probs, axis=-1)
+  projected = jnp.sum(jnp.clip(1. - delta_hat, 0., 1.) * probs, axis=-1)
+  return projected.astype(result_dtype)
 
 
 def categorical_td_learning(
