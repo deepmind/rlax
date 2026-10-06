@@ -89,7 +89,13 @@ def log_loss(
     a vector of same shape of `predictions`.
   """
   chex.assert_type([predictions, targets], float)
-  return -jnp.log(likelihood(predictions, targets))
+  # Evaluate the cross entropy in log space. Replace only the unused endpoint
+  # arguments so perfect predictions have finite prediction gradients.
+  log_p = jnp.log(jnp.where((targets == 0) & (predictions == 0),
+                           1., predictions))
+  log_not_p = jnp.log1p(jnp.where((targets == 1) & (predictions == 1),
+                                0., -predictions))
+  return -targets * log_p - (1. - targets) * log_not_p
 
 
 def pixel_control_loss(
