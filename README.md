@@ -4,6 +4,10 @@
 ![docs](https://readthedocs.org/projects/rlax/badge/?version=latest)
 ![pypi](https://img.shields.io/pypi/v/rlax)
 
+<p align="center">
+  <b>English</b> · <a href="https://github.com/google-deepmind/rlax/blob/main/README.zh.md">简体中文</a>
+</p>
+
 RLax (pronounced "relax") is a library built on top of JAX that exposes
 useful building blocks for implementing reinforcement learning agents. Full
 documentation can be found at
