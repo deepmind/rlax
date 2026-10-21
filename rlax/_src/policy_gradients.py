@@ -34,8 +34,12 @@ Scalar = chex.Scalar
 
 def _clip_by_l2_norm(x: Array, max_norm: float) -> Array:
   """Clip gradients to maximum l2 norm `max_norm`."""
+  # Scale down large entries before squaring, so finite inputs do not overflow
+  # the norm. Keeping scale >= 1 also avoids amplifying small inputs.
+  scale = jnp.maximum(1.0, jnp.max(jnp.abs(x), initial=0.0))
+  scaled_x = x / scale
   # Compute the sum of squares and find out where things are zero.
-  sum_sq = jnp.sum(jnp.vdot(x, x))
+  sum_sq = jnp.sum(jnp.vdot(scaled_x, scaled_x))
   nonzero = sum_sq > 0
 
   # Compute the norm wherever sum_sq > 0 and leave it <= 0 otherwise. This makes
@@ -48,10 +52,9 @@ def _clip_by_l2_norm(x: Array, max_norm: float) -> Array:
   sum_sq_ones = jnp.where(nonzero, sum_sq, jnp.ones_like(sum_sq))
   norm = jnp.where(nonzero, jnp.sqrt(sum_sq_ones), sum_sq)
 
-  # Normalize by max_norm. Whenever norm < max_norm we're left with x (this
-  # happens trivially for indices where nonzero is false). Otherwise we're left
-  # with the desired x * max_norm / norm.
-  return (x * max_norm) / jnp.maximum(norm, max_norm)
+  # Compare norm and max_norm in the same scaled units. Divide the scalar
+  # factor first to avoid overflow or underflow in x * max_norm.
+  return scaled_x * (max_norm / jnp.maximum(norm, max_norm / scale))
 
 
 def dpg_loss(

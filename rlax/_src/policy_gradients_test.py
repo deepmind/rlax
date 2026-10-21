@@ -25,6 +25,45 @@ from rlax._src import distributions
 from rlax._src import policy_gradients
 
 
+class ClipByL2NormTest(parameterized.TestCase):
+
+  @parameterized.named_parameters(
+      ('float16', jnp.float16, 100.0, 1.0),
+      ('float32', jnp.float32, 1e20, 1.0),
+      ('large_clip', jnp.float32, 1e20, 1e20),
+      ('small_unclipped', jnp.float32, 1e-25, 1e-20),
+  )
+  def test_finite_inputs(self, dtype, scale, max_norm):
+    x = jnp.array([3.0, -4.0], dtype=dtype) * scale
+    # Calculate the reference in host float64, avoiding the tested dtype's
+    # intermediate square/product overflow and underflow.
+    reference = np.asarray(x, dtype=np.float64)
+    reference *= min(1.0, max_norm / np.linalg.norm(reference))
+    clip = functools.partial(
+        policy_gradients._clip_by_l2_norm, max_norm=max_norm
+    )
+    for fn in (clip, jax.jit(clip)):
+      actual = fn(x)
+      self.assertEqual(actual.dtype, x.dtype)
+      np.testing.assert_allclose(actual, reference, rtol=2e-3, atol=0.0)
+
+  def test_zero_and_unclipped_derivatives(self):
+    clip = functools.partial(policy_gradients._clip_by_l2_norm, max_norm=1.0)
+    for x in (jnp.zeros(2), jnp.array([0.1, -0.2])):
+      for fn in (clip, jax.jit(clip)):
+        np.testing.assert_array_equal(fn(x), x)
+        np.testing.assert_allclose(jax.jacfwd(fn)(x), np.eye(2))
+        np.testing.assert_allclose(jax.jacrev(fn)(x), np.eye(2))
+
+  def test_clipped_derivatives(self):
+    clip = functools.partial(policy_gradients._clip_by_l2_norm, max_norm=1.0)
+    x = jnp.array([3.0, 4.0])
+    expected = (np.eye(2) - np.outer([0.6, 0.8], [0.6, 0.8])) / 5.0
+    for fn in (clip, jax.jit(clip)):
+      np.testing.assert_allclose(jax.jacfwd(fn)(x), expected, atol=1e-7)
+      np.testing.assert_allclose(jax.jacrev(fn)(x), expected, atol=1e-7)
+
+
 class DpgLossTest(parameterized.TestCase):
 
   def setUp(self):
@@ -54,6 +93,23 @@ class DpgLossTest(parameterized.TestCase):
     # Test outputs.
     actual = np.sum(dpg(a_t, dqda), axis=1)
     np.testing.assert_allclose(actual, self.expected, atol=1e-4)
+
+  @parameterized.named_parameters(
+      ('float16', jnp.float16, 100.0),
+      ('float32', jnp.float32, 1e20),
+  )
+  def test_large_finite_critic_gradients(self, dtype, scale):
+    dqda = jnp.array([[3.0, 4.0], [-3.0, -4.0]], dtype=dtype) * scale
+    actions = jnp.zeros_like(dqda)
+    dpg = jax.vmap(
+        functools.partial(policy_gradients.dpg_loss, dqda_clipping=1.0)
+    )
+    for fn in (dpg, jax.jit(dpg)):
+      np.testing.assert_allclose(
+          fn(actions, dqda), [[0.18, 0.32], [0.18, 0.32]], rtol=2e-3
+      )
+      grad = jax.grad(lambda a, fn=fn: jnp.sum(fn(a, dqda)))(actions)
+      np.testing.assert_allclose(grad, [[-0.6, -0.8], [0.6, 0.8]], rtol=2e-3)
 
 
 class PolicyGradientLossTest(parameterized.TestCase):
