@@ -144,6 +144,40 @@ class PopArtTest(parameterized.TestCase):
     np.testing.assert_allclose(
         state.shift, expected_shift, atol=1e-1, rtol=1e-1)
 
+  @parameterized.product(
+      dtype_and_values=[
+          (np.int8, [-100, 100]),
+          (np.uint8, [0, 200]),
+          (np.int16, [-300, 300]),
+          (np.uint16, [0, 600]),
+          (np.int32, [-50000, 50000]),
+          (np.uint32, [0, 100000]),
+      ],
+      compiled=[False, True],
+  )
+  def test_integer_targets_do_not_overflow(self, dtype_and_values, compiled):
+    dtype, values = dtype_and_values
+    initial_state, update = pop_art.popart(
+        num_outputs=1, step_size=0.5, scale_lb=1e-6, scale_ub=1e6)
+    if compiled:
+      update = jax.jit(update)
+    params = get_constant_linear_params(1)
+    targets = np.asarray(values, dtype=dtype)
+    indices = np.zeros(targets.shape, dtype=np.int32)
+
+    new_params, state = update(params, initial_state(), targets, indices)
+
+    # Calculate the moments independently, without squaring in an integer dtype.
+    expected_shift = np.mean(targets.astype(np.float64))
+    expected_second_moment = np.mean(np.square(targets.astype(np.float64)))
+    expected_scale = np.std(targets.astype(np.float64))
+    np.testing.assert_allclose(state.shift, [expected_shift])
+    np.testing.assert_allclose(state.second_moment, [expected_second_moment])
+    np.testing.assert_allclose(state.scale, [expected_scale])
+    np.testing.assert_allclose(new_params['w'], params['w'] / expected_scale)
+    np.testing.assert_allclose(
+        new_params['b'], [-expected_shift / expected_scale])
+
   def test_slow_update(self):
     num_outputs = 2
     # Two step sizes: 0.1, and 0.8

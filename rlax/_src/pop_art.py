@@ -152,6 +152,9 @@ def art(state: PopArtState,
 
   # Update second moment.
   second_moment_gather = state.second_moment[indices]
+  if jnp.issubdtype(targets.dtype, jnp.integer):
+    # Promote before squaring to avoid overflow in integer target dtypes.
+    targets = targets.astype(second_moment_gather.dtype)
   second_moment_update = step_size * (
       jnp.square(targets) - second_moment_gather)
   second_moment_new = _cross_replica_scatter_add(state.second_moment, indices,
