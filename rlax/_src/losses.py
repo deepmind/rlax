@@ -52,8 +52,10 @@ def l2_loss(predictions: Array,
   if targets is None:
     targets = jnp.zeros_like(predictions)
   chex.assert_type([predictions, targets], float)
+  # Scale before squaring to avoid overflowing a representable final loss.
   # pyrefly: ignore[unsupported-operation]
-  return 0.5 * (predictions - targets)**2
+  error = predictions - targets
+  return (0.5 * error) * error
 
 
 def likelihood(predictions: Array, targets: Array) -> Array:
@@ -186,7 +188,7 @@ def pixel_control_loss(
           value_learning.q_lambda, lambda_=1.0),
       in_axes=1, out_axes=1)
   td_error = batched_q_lambda(q_tm1, a_tm1, r_t, pcont_t, q_t)
-  loss = 0.5 * td_error**2
+  loss = (0.5 * td_error) * td_error
   expanded_shape = (sequence_length,) + height_width
   spatial_loss = jnp.reshape(loss, expanded_shape)  # [T,H,W].
   return spatial_loss
@@ -214,4 +216,5 @@ def expectile_loss(predictions: Array, targets: Array, expectile: float):
   diff = targets - predictions  # pyrefly: ignore[unsupported-operation]
   is_underestimation = jnp.less(diff, 0)
   weight = jnp.abs(expectile - is_underestimation)
-  return weight * (diff**2)
+  # Weight first: the unweighted square may overflow even for a finite loss.
+  return (weight * diff) * diff

@@ -15,6 +15,7 @@
 """Tests for losses.py."""
 
 import functools
+import math
 from absl.testing import absltest
 from absl.testing import parameterized
 import chex
@@ -109,6 +110,119 @@ class ExpectileLossTest(parameterized.TestCase):
     batch_grad_fn = jax.vmap(jax.grad(expectile_loss_fn), (0, 0))
     predicted_grads = batch_grad_fn(predictions, targets)
     np.testing.assert_allclose(predicted_grads, expected_grads, atol=1e-4)
+
+
+class WeightedSquareOverflowTest(parameterized.TestCase):
+
+  @parameterized.product(
+      dtype_and_exponent=[
+          (jnp.float16, 8),
+          (jnp.bfloat16, 64),
+          (jnp.float32, 64),
+          (jnp.float64, 512),
+      ],
+      compiled=[False, True],
+  )
+  def test_l2_loss_stays_finite(self, dtype_and_exponent, compiled):
+    dtype, exponent = dtype_and_exponent
+    with jax.enable_x64():
+      magnitude = math.ldexp(1.0, exponent)
+      predictions = jnp.asarray([-magnitude, magnitude], dtype=dtype)
+      expected = jnp.full_like(predictions, math.ldexp(0.5, 2 * exponent))
+      loss_fn = jax.jit(losses.l2_loss) if compiled else losses.l2_loss
+      for targets in (None, jnp.zeros_like(predictions)):
+        actual = loss_fn(predictions, targets)
+        self.assertEqual(actual.dtype, predictions.dtype)
+        np.testing.assert_array_equal(actual, expected)
+        gradients = jax.grad(lambda p, t=targets: jnp.sum(loss_fn(p, t)))(
+            predictions
+        )
+        np.testing.assert_array_equal(gradients, predictions)
+
+  @parameterized.product(
+      dtype_and_exponent=[
+          (jnp.float16, 8),
+          (jnp.bfloat16, 64),
+          (jnp.float32, 64),
+          (jnp.float64, 512),
+      ],
+      compiled=[False, True],
+      expectile=[0.25, 0.5, 0.75],
+  )
+  def test_expectile_loss_stays_finite(
+      self, dtype_and_exponent, compiled, expectile
+  ):
+    dtype, exponent = dtype_and_exponent
+    with jax.enable_x64():
+      magnitude = math.ldexp(1.0, exponent)
+      predictions = jnp.asarray([-magnitude, magnitude], dtype=dtype)
+      targets = jnp.zeros_like(predictions)
+      weights = [expectile, 1.0 - expectile]
+      expected = jnp.asarray(
+          [math.ldexp(w, 2 * exponent) for w in weights], dtype=dtype
+      )
+      loss_fn = functools.partial(losses.expectile_loss, expectile=expectile)
+      if compiled:
+        loss_fn = jax.jit(loss_fn)
+      actual = loss_fn(predictions, targets)
+      self.assertEqual(actual.dtype, predictions.dtype)
+      np.testing.assert_array_equal(actual, expected)
+      gradients = jax.vmap(jax.grad(loss_fn))(predictions, targets)
+      expected_gradients = jnp.asarray(
+          [-2 * expectile * magnitude, 2 * (1 - expectile) * magnitude],
+          dtype=dtype,
+      )
+      np.testing.assert_array_equal(gradients, expected_gradients)
+
+  @parameterized.product(
+      dtype=[jnp.float16, jnp.float32],
+      compiled=[False, True],
+      expectile=[0.0, 1.0],
+  )
+  def test_zero_weight_does_not_return_nan(self, dtype, compiled, expectile):
+    predictions = jnp.asarray(300.0 if expectile else -300.0, dtype=dtype)
+    # float32 needs a larger residual to overflow its square.
+    if dtype == jnp.float32:
+      predictions = predictions * 1e18
+    targets = jnp.zeros_like(predictions)
+    loss_fn = functools.partial(losses.expectile_loss, expectile=expectile)
+    if compiled:
+      loss_fn = jax.jit(loss_fn)
+    np.testing.assert_array_equal(loss_fn(predictions, targets), 0.0)
+    np.testing.assert_array_equal(jax.grad(loss_fn)(predictions, targets), 0.0)
+
+  @parameterized.product(
+      dtype_and_exponent=[
+          (jnp.float16, 8),
+          (jnp.bfloat16, 64),
+          (jnp.float32, 64),
+          (jnp.float64, 512),
+      ],
+      compiled=[False, True],
+  )
+  def test_pixel_control_loss_stays_finite(self, dtype_and_exponent, compiled):
+    dtype, exponent = dtype_and_exponent
+    with jax.enable_x64():
+      observations = jnp.zeros((2, 1, 1, 1), dtype=dtype)
+      actions = jnp.zeros((1,), dtype=jnp.int32)
+      magnitude = math.ldexp(1.0, exponent)
+      values = jnp.asarray([magnitude, 0.0], dtype=dtype).reshape(2, 1, 1, 1)
+      loss_fn = functools.partial(
+          losses.pixel_control_loss,
+          observations,
+          actions,
+          discount_factor=0.0,
+          cell_size=1,
+      )
+      if compiled:
+        loss_fn = jax.jit(loss_fn)
+      actual = loss_fn(values)
+      self.assertEqual(actual.dtype, values.dtype)
+      np.testing.assert_array_equal(
+          actual, jnp.full((1, 1, 1), math.ldexp(0.5, 2 * exponent), dtype)
+      )
+      gradients = jax.grad(lambda v: jnp.sum(loss_fn(v)))(values)
+      np.testing.assert_array_equal(gradients, values)
 
 
 class LogLossTest(parameterized.TestCase):
