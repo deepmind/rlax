@@ -117,7 +117,8 @@ def transform_from_2hot(
   """Transforms from a categorical distribution to a scalar."""
   support_space = jnp.linspace(
       min_value, max_value, num_bins).astype(probs.dtype)
-  scalar = jnp.sum(probs * jnp.expand_dims(support_space, 0), -1)
+  support_space = jnp.broadcast_to(support_space, jnp.shape(probs))
+  scalar = jnp.sum(probs * support_space, -1)
   return scalar
 
 
@@ -126,7 +127,8 @@ def transform_to_2hot_nonlinear(scalar: Array, bins: Array) -> Array:
   min_value, max_value = bins[0], bins[-1]  # pyrefly: ignore[bad-index]
   num_bins = len(bins)  # pyrefly: ignore[bad-argument-type]
   scalar = jnp.clip(scalar, min_value, max_value)
-  upper_index = jnp.argmax(scalar[..., None] <= bins.reshape(1, -1), axis=-1)
+  support = jnp.broadcast_to(bins, scalar.shape + (num_bins,))
+  upper_index = jnp.argmax(scalar[..., None] <= support, axis=-1)
   upper_value = bins[upper_index]  # pyrefly: ignore[bad-index]
   lower_value = bins[upper_index - 1]  # pyrefly: ignore[bad-index]
   p_lower = (upper_value - scalar) / (upper_value - lower_value)
@@ -140,5 +142,6 @@ def transform_from_2hot_nonlinear(
     probs: Array,
     bins: Array) -> Array:
   """Transforms from a categorical distribution to a scalar."""
-  scalar = jnp.sum(probs * jnp.expand_dims(bins, 0), -1)
+  support = jnp.broadcast_to(bins, jnp.shape(probs))
+  scalar = jnp.sum(probs * support, -1)
   return scalar

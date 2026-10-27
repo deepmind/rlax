@@ -19,6 +19,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import chex
 import jax
+import jax.numpy as jnp
 import numpy as np
 from rlax._src import nonlinear_bellman
 
@@ -63,6 +64,89 @@ class IdentityTest(parameterized.TestCase):
     probs = tx.apply(a)
     scalar = tx.apply_inv(probs)
     np.testing.assert_allclose(a, scalar, rtol=1e-4, atol=1e-4)
+
+  @parameterized.product(
+      nonlinear=[False, True],
+      shape=[(), (3,), (2, 3), (0,)],
+      compiled=[False, True],
+  )
+  def test_twohot_batch_shape(self, nonlinear, shape, compiled):
+    tx = (
+        nonlinear_bellman.unbiased_transform_pair(
+            -1.0, 1.0, 5, nonlinear_bellman.SIGNED_LOGP1_PAIR
+        )
+        if nonlinear
+        else nonlinear_bellman.twohot_pair(-1.0, 1.0, 5)
+    )
+    values = jnp.full(shape, 0.25, dtype=jnp.float32)
+    encode = jax.jit(tx.apply) if compiled else tx.apply
+    decode = jax.jit(tx.apply_inv) if compiled else tx.apply_inv
+    with jax.numpy_rank_promotion('raise'):
+      encoded = encode(values)
+      restored = decode(encoded)
+    self.assertEqual(encoded.shape, shape + (5,))
+    self.assertEqual(restored.shape, shape)
+    self.assertEqual(encoded.dtype, jnp.float32)
+    self.assertEqual(restored.dtype, jnp.float32)
+    support = np.linspace(-1.0, 1.0, 5, dtype=np.float32)
+    if nonlinear:
+      support = np.sign(support) * np.expm1(np.abs(support))
+    upper = np.searchsorted(support, 0.25)
+    expected = np.zeros(5)
+    expected[upper - 1] = (support[upper] - 0.25) / (
+        support[upper] - support[upper - 1]
+    )
+    expected[upper] = 1.0 - expected[upper - 1]
+    np.testing.assert_allclose(
+        encoded, np.broadcast_to(expected, shape + (5,)), rtol=1e-4, atol=1e-5
+    )
+    np.testing.assert_allclose(restored, values, rtol=1e-4, atol=1e-5)
+
+  @parameterized.product(nonlinear=[False, True], compiled=[False, True])
+  def test_twohot_scalar_inverse_gradient(self, nonlinear, compiled):
+    tx = (
+        nonlinear_bellman.unbiased_transform_pair(
+            -1.0, 1.0, 5, nonlinear_bellman.SIGNED_LOGP1_PAIR
+        )
+        if nonlinear
+        else nonlinear_bellman.twohot_pair(-1.0, 1.0, 5)
+    )
+    probs = jnp.asarray([0.0, 0.0, 0.5, 0.5, 0.0], dtype=jnp.float32)
+    gradient = jax.grad(tx.apply_inv)
+    if compiled:
+      gradient = jax.jit(gradient)
+    with jax.numpy_rank_promotion('raise'):
+      actual = gradient(probs)
+    expected = np.linspace(-1.0, 1.0, 5, dtype=np.float32)
+    if nonlinear:
+      expected = np.sign(expected) * np.expm1(np.abs(expected))
+    self.assertEqual(actual.shape, (5,))
+    np.testing.assert_allclose(actual, expected, rtol=1e-6)
+
+  @parameterized.product(nonlinear=[False, True], compiled=[False, True])
+  def test_twohot_inverse_vmap_matches_direct(self, nonlinear, compiled):
+    tx = (
+        nonlinear_bellman.unbiased_transform_pair(
+            -1.0, 1.0, 5, nonlinear_bellman.IDENTITY_PAIR
+        )
+        if nonlinear
+        else nonlinear_bellman.twohot_pair(-1.0, 1.0, 5)
+    )
+    probs = jnp.asarray(
+        [[0.0, 0.5, 0.5, 0.0, 0.0], [0.0, 0.0, 0.5, 0.5, 0.0]],
+        dtype=jnp.float32,
+    )
+    decode = jax.jit(tx.apply_inv) if compiled else tx.apply_inv
+    mapped_decode = jax.vmap(tx.apply_inv)
+    if compiled:
+      mapped_decode = jax.jit(mapped_decode)
+    with jax.numpy_rank_promotion('raise'):
+      direct = decode(probs)
+      mapped = mapped_decode(probs)
+    self.assertEqual(direct.shape, (2,))
+    self.assertEqual(mapped.shape, (2,))
+    np.testing.assert_allclose(direct, [-0.25, 0.25])
+    np.testing.assert_allclose(mapped, direct)
 
 
 class TransformedQLambdaTest(parameterized.TestCase):
