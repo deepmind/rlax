@@ -480,7 +480,10 @@ def vmpo_compute_weights_and_temperature_loss(
   epsilon_temperature = temperature_constraint.epsilon
 
   # Scale the advantages.
-  scaled_advantages = restarting_weights * advantages / temperature
+  # Restart rows must not set the maximum or overflow the exponential below.
+  scaled_advantages = jnp.where(
+      restarting_weights != 0,
+      restarting_weights * advantages / temperature, -jnp.inf)
   max_scaled_advantage = jnp.max(scaled_advantages)
   # If the axis_name is not None find the maximum across all devices.
   if axis_name:
@@ -492,6 +495,9 @@ def vmpo_compute_weights_and_temperature_loss(
     max_scaled_advantage = jax.lax.select(
         use_stop_gradient, jax.lax.stop_gradient(max_scaled_advantage),
         max_scaled_advantage)
+  # Keep an entirely masked batch finite, after the cross-replica reduction.
+  max_scaled_advantage = jnp.where(
+      jnp.isneginf(max_scaled_advantage), 0., max_scaled_advantage)
   # Maybe don't use all of the advantages.
   top_k_restarting_weights = get_top_k_weights(
       top_k_fraction, restarting_weights, scaled_advantages, axis_name,

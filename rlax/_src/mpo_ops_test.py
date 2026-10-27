@@ -492,6 +492,102 @@ class MPOTest(parameterized.TestCase):
     self.assertAlmostEqual(
         temperature_loss, expected_temperature_loss, places=4)
 
+  @parameterized.product(
+      compiled=[False, True],
+      use_stop_gradient=[False, True],
+      top_k_fraction=[0.5, 1.0],
+  )
+  def test_vmpo_negative_advantages_with_restarts(
+      self, compiled, use_stop_gradient, top_k_fraction):
+    """Ignored restart rows cannot suppress the valid E-step weights."""
+    advantages = jnp.array([-1000., -1001., 9000., -9000.])
+    restarting_weights = jnp.array([1., 1., 0., 0.])
+    importance_weights = jnp.array([1., 0.5, 1., 1.])
+
+    def e_step(temperature):
+      return mpo_ops.vmpo_compute_weights_and_temperature_loss(
+          advantages, restarting_weights, importance_weights,
+          mpo_ops.LagrangePenalty(temperature, _EPSILON_BOUND),
+          _projection_operator, top_k_fraction,
+          use_stop_gradient=use_stop_gradient)
+
+    evaluate = jax.jit(e_step) if compiled else e_step
+    loss, weights, num_samples = evaluate(jnp.array(1.))
+    relative_weights = np.array([1., 0.5 * math.exp(-1.)])
+    expected_weights = relative_weights / relative_weights.sum()
+    log_mean = math.log(relative_weights.sum() / 2.)
+    np.testing.assert_allclose(weights, [*expected_weights, 0., 0.], rtol=1e-5)
+    self.assertAlmostEqual(float(loss), -1000. + log_mean + _EPSILON_BOUND,
+                           places=3)
+    self.assertAlmostEqual(float(num_samples), 2.)
+    grad_fn = jax.grad(lambda t: e_step(t)[0])
+    if compiled:
+      grad_fn = jax.jit(grad_fn)
+    expected_grad = _EPSILON_BOUND + log_mean + expected_weights[1]
+    self.assertAlmostEqual(float(grad_fn(jnp.array(1.))), expected_grad,
+                           places=3)
+
+  @parameterized.product(
+      compiled=[False, True], use_stop_gradient=[False, True])
+  def test_vmpo_loss_retains_policy_gradient_with_restarts(
+      self, compiled, use_stop_gradient):
+    def loss_fn(log_probs):
+      losses, _ = mpo_ops.vmpo_loss(
+          log_probs, jnp.array([-1000., -1001., 9000., -9000.]),
+          mpo_ops.LagrangePenalty(jnp.array(1.), _EPSILON_BOUND),
+          [(jnp.zeros(4), mpo_ops.LagrangePenalty(jnp.array(1.), 0.))],
+          restarting_weights=jnp.array([1., 1., 0., 0.]),
+          top_k_fraction=0.5, use_stop_gradient=use_stop_gradient)
+      return jnp.mean(losses)
+
+    evaluate = jax.grad(loss_fn)
+    if compiled:
+      evaluate = jax.jit(evaluate)
+    expected_weights = np.array([1., math.exp(-1.)])
+    expected_weights /= expected_weights.sum()
+    np.testing.assert_allclose(
+        evaluate(jnp.array([-0.5, -1., -2., -3.])),
+        [-expected_weights[0], -expected_weights[1], 0., 0.], rtol=1e-5)
+
+  @parameterized.product(
+      compiled=[False, True], use_stop_gradient=[False, True])
+  def test_vmpo_all_restarts_remain_finite(self, compiled, use_stop_gradient):
+    def e_step(temperature):
+      return mpo_ops.vmpo_compute_weights_and_temperature_loss(
+          jnp.array([-1000., 1000.]), jnp.zeros(2), jnp.ones(2),
+          mpo_ops.LagrangePenalty(temperature, _EPSILON_BOUND),
+          _projection_operator, 1., use_stop_gradient=use_stop_gradient)
+
+    evaluate = jax.jit(e_step) if compiled else e_step
+    loss, weights, _ = evaluate(jnp.array(1.))
+    self.assertAlmostEqual(float(loss), _EPSILON_BOUND, places=5)
+    np.testing.assert_array_equal(weights, np.zeros(2))
+    self.assertAlmostEqual(float(jax.grad(lambda t: e_step(t)[0])(
+        jnp.array(1.))), _EPSILON_BOUND, places=5)
+
+  @parameterized.parameters(False, True)
+  def test_vmpo_restart_only_replica_does_not_set_maximum(self, compiled):
+    def e_step(advantages, restarting_weights):
+      return mpo_ops.vmpo_compute_weights_and_temperature_loss(
+          advantages, restarting_weights, jnp.ones_like(advantages),
+          mpo_ops.LagrangePenalty(jnp.array(1.), _EPSILON_BOUND),
+          _projection_operator, 1., axis_name='replicas')
+
+    evaluate = jax.vmap(e_step, axis_name='replicas')
+    if compiled:
+      evaluate = jax.jit(evaluate)
+    losses, weights, counts = evaluate(
+        jnp.array([[1000., -1000.], [-1000., -1001.]]),
+        jnp.array([[0., 0.], [1., 1.]]))
+    expected_weights = np.array([1., math.exp(-1.)])
+    expected_weights /= expected_weights.sum()
+    np.testing.assert_allclose(
+        weights, [[0., 0.], expected_weights], rtol=1e-5)
+    np.testing.assert_allclose(
+        losses, -1000. + math.log((1. + math.exp(-1.)) / 2.) +
+        _EPSILON_BOUND, rtol=1e-6)
+    np.testing.assert_allclose(counts, 2.)
+
   @parameterized.parameters(
       # When the top k fraction is 1.0 all of the weights should be 1
       {'top_k_fraction': 1.0,
