@@ -213,7 +213,7 @@ def rm_loss(
   chex.assert_rank([logits_t, q_t], 2)
   chex.assert_type([logits_t, q_t], float)
 
-  policy_t, advantage_t = _compute_advantages(logits_t, q_t)
+  policy_t, advantage_t = _compute_advantages(logits_t, q_t, use_stop_gradient)
   action_regret_t = jax.nn.relu(advantage_t)
   action_regret_t = jax.lax.select(use_stop_gradient,
                                    jax.lax.stop_gradient(action_regret_t),

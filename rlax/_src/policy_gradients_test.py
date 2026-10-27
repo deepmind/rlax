@@ -166,6 +166,46 @@ class RMLossTest(parameterized.TestCase):
     actual = rm_loss(policy_logits, q_values)
     np.testing.assert_allclose(self.expected_policy_loss, actual, atol=1e-4)
 
+  @parameterized.product(jit=[False, True], stop_gradient=[False, True, None])
+  def test_rm_loss_gradients(self, jit, stop_gradient):
+    logits = np.array([[0.2, -0.4, 0.7], [-0.3, 0.8, 0.1]])
+    q_values = np.array([[-2., 0.5, 3.], [4., -1., 0.7]])
+    probabilities = np.exp(logits - logits.max(axis=1, keepdims=True))
+    probabilities /= probabilities.sum(axis=1, keepdims=True)
+    advantages = q_values - np.sum(
+        probabilities * q_values, axis=1, keepdims=True)
+    regrets = np.maximum(advantages, 0.)
+    expected_loss = -np.mean(np.sum(probabilities * regrets, axis=1))
+
+    # Differentiate the host-side regret formula away from ReLU boundaries.
+    expected_q_grad = np.zeros_like(q_values)
+    probability_grad = -regrets
+    if stop_gradient is False:
+      active = advantages > 0.
+      active_mass = np.sum(probabilities * active, axis=1, keepdims=True)
+      expected_q_grad = probabilities * (active_mass - active) / len(logits)
+      probability_grad += active_mass * q_values
+    expected_logits_grad = probabilities * (
+        probability_grad - np.sum(
+            probabilities * probability_grad, axis=1, keepdims=True))
+    expected_logits_grad /= len(logits)
+
+    loss_and_grad = jax.value_and_grad(
+        policy_gradients.rm_loss, argnums=(0, 1))
+    if jit:
+      loss_and_grad = jax.jit(loss_and_grad)
+    args = (jnp.asarray(logits, dtype=jnp.float32),
+            jnp.asarray(q_values, dtype=jnp.float32))
+    if stop_gradient is None:
+      actual_loss, (logits_grad, q_grad) = loss_and_grad(*args)
+    else:
+      actual_loss, (logits_grad, q_grad) = loss_and_grad(*args, stop_gradient)
+
+    np.testing.assert_allclose(actual_loss, expected_loss, rtol=1e-6)
+    np.testing.assert_allclose(
+        logits_grad, expected_logits_grad, rtol=1e-5, atol=1e-7)
+    np.testing.assert_allclose(q_grad, expected_q_grad, rtol=1e-5, atol=1e-7)
+
 
 class RPGLossTest(parameterized.TestCase):
 
