@@ -55,6 +55,79 @@ class DpgLossTest(parameterized.TestCase):
     actual = np.sum(dpg(a_t, dqda), axis=1)
     np.testing.assert_allclose(actual, self.expected, atol=1e-4)
 
+  @chex.all_variants()
+  @parameterized.named_parameters(
+      ('float16', jnp.float16, 1., 2.**-13),
+      ('bfloat16', jnp.bfloat16, 1., 2.**-10),
+      ('float32_small_gradient', jnp.float32, 1., 2.**-25),
+      ('float32_large_action', jnp.float32, 2.**25, 1.),
+  )
+  def test_dpg_loss_preserves_small_critic_gradient(
+      self, dtype, action_scale, gradient_scale):
+    actions = jnp.array([action_scale, -action_scale], dtype=dtype)
+    critic_gradients = jnp.array(
+        [gradient_scale, -gradient_scale], dtype=dtype)
+
+    def loss_and_gradient(actions, critic_gradients, use_stop_gradient):
+      def loss(actions, critic_gradients):
+        return jnp.sum(policy_gradients.dpg_loss(
+            actions, critic_gradients,
+            use_stop_gradient=use_stop_gradient))
+      return jax.value_and_grad(loss, argnums=(0, 1))(
+          actions, critic_gradients)
+
+    loss_and_gradient = self.variant(loss_and_gradient)
+    for use_stop_gradient in (True, False):
+      loss, (action_gradient, critic_gradient) = loss_and_gradient(
+          actions, critic_gradients, use_stop_gradient)
+      expected_action_gradient = (
+          -critic_gradients if use_stop_gradient else jnp.zeros_like(actions))
+      expected_critic_gradient = (
+          jnp.zeros_like(critic_gradients)
+          if use_stop_gradient else critic_gradients)
+      np.testing.assert_array_equal(action_gradient, expected_action_gradient)
+      np.testing.assert_array_equal(critic_gradient, expected_critic_gradient)
+      expected_loss = jnp.sum(0.5 * critic_gradients**2)
+      np.testing.assert_array_equal(loss, expected_loss)
+
+  @chex.all_variants()
+  def test_dpg_loss_stops_gradient_through_critic(self):
+    def loss(parameters):
+      actions = jnp.array([1., -1.]) + 2. * parameters
+      critic = lambda actions: jnp.sum(2.**-26 * actions**2)
+      critic_gradient = jax.grad(critic)(actions)
+      return jnp.sum(policy_gradients.dpg_loss(actions, critic_gradient))
+
+    gradient = self.variant(jax.grad(loss))(jnp.zeros(2))
+    np.testing.assert_array_equal(gradient, jnp.array([-2.**-24, 2.**-24]))
+
+  @chex.all_variants()
+  @parameterized.parameters(True, False)
+  def test_dpg_loss_clipped_gradients(self, use_stop_gradient):
+    def loss(parameters, critic_gradient):
+      actions = jnp.array([1., -1.]) + 2. * parameters
+      return jnp.sum(policy_gradients.dpg_loss(
+          actions, critic_gradient, dqda_clipping=2.**-25,
+          use_stop_gradient=use_stop_gradient))
+
+    gradients = self.variant(jax.grad(loss, argnums=(0, 1)))(
+        jnp.zeros(2), jnp.array([3., 4.]))
+    expected = (
+        -2.**-24 * jnp.array([0.6, 0.8])
+        if use_stop_gradient else jnp.zeros(2))
+    np.testing.assert_allclose(gradients[0], expected, rtol=1e-6, atol=0.)
+    np.testing.assert_allclose(gradients[1], jnp.zeros(2), atol=1e-20)
+
+  @chex.all_variants()
+  @parameterized.parameters(True, False)
+  def test_dpg_loss_broadcasts_and_promotes_inputs(self, use_stop_gradient):
+    loss = self.variant(functools.partial(
+        policy_gradients.dpg_loss, use_stop_gradient=use_stop_gradient))
+    result = loss(jnp.array([1., -1.], dtype=jnp.float32),
+                  jnp.array([0.5], dtype=jnp.float16))
+    self.assertEqual(result.dtype, jnp.float32)
+    np.testing.assert_array_equal(result, jnp.array([0.125, 0.125]))
+
 
 class PolicyGradientLossTest(parameterized.TestCase):
 

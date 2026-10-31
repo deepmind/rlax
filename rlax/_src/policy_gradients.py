@@ -80,10 +80,12 @@ def dpg_loss(
 
   if dqda_clipping is not None:
     dqda_t = _clip_by_l2_norm(dqda_t, dqda_clipping)
-  target_tm1 = dqda_t + a_t
-  target_tm1 = jax.lax.select(use_stop_gradient,
-                              jax.lax.stop_gradient(target_tm1), target_tm1)
-  return losses.l2_loss(target_tm1 - a_t)
+  # Form the error without adding the critic gradient to the action, which
+  # could round away a small gradient before subtracting the action again.
+  dqda_t = jax.lax.select(
+      use_stop_gradient, jax.lax.stop_gradient(dqda_t), dqda_t)
+  a_t = jax.lax.select(use_stop_gradient, a_t, jax.lax.stop_gradient(a_t))
+  return losses.l2_loss(dqda_t + (jax.lax.stop_gradient(a_t) - a_t))
 
 
 def policy_gradient_loss(
