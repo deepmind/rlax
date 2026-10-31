@@ -19,6 +19,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import chex
 import jax
+import jax.numpy as jnp
 import numpy as np
 from rlax._src import distributions
 from rlax._src import vtrace
@@ -156,6 +157,50 @@ class VTraceTest(parameterized.TestCase):
     leaky_vtrace_output = leaky_vtrace_fn(v_tm1, v_t, r_t, discount_t, rho_tm1)
     # Test output.
     np.testing.assert_allclose(vtrace_output, leaky_vtrace_output, rtol=1e-3)
+
+  @chex.all_variants()
+  @parameterized.product(leaky=(False, True), masked_input=tuple(range(6)))
+  def test_masked_inputs_have_finite_zero_gradients(self, leaky, masked_input):
+    mask = jnp.array([True, False, True])
+    inputs = [jnp.zeros(3), jnp.zeros(3), jnp.array([1., 0., 2.]),
+              jnp.ones(3), jnp.full(3, 2.), jnp.ones(3)]
+    fn = (functools.partial(vtrace.leaky_vtrace, alpha_=0.5)
+          if leaky else vtrace.vtrace)
+
+    def loss(v_tm1, v_t, r_t, discount_t, rho_tm1, lambda_):
+      errors = fn(v_tm1, v_t, r_t, discount_t, rho_tm1,
+                  lambda_=lambda_, sample_mask=mask,
+                  stop_target_gradients=False)
+      return jnp.sum(jnp.where(mask, errors, 0.))
+
+    loss_and_grad = self.variant(jax.value_and_grad(
+        loss, argnums=tuple(range(6))))
+    expected_value, expected_gradients = loss_and_grad(*inputs)
+    inputs[masked_input] = inputs[masked_input].at[1].set(jnp.nan)
+    actual_value, actual_gradients = loss_and_grad(*inputs)
+    np.testing.assert_array_equal(actual_value, expected_value)
+    for actual, expected in zip(actual_gradients, expected_gradients):
+      np.testing.assert_array_equal(actual, expected)
+      self.assertEqual(actual[1], 0.)
+
+  @chex.all_variants()
+  @parameterized.parameters(0., 0.5, 1.)
+  def test_leaky_vtrace_masks_overflow_before_meta_gradient(self, alpha):
+    mask = jnp.array([True, False, True])
+
+    def loss(alpha):
+      errors = vtrace.leaky_vtrace(
+          jnp.zeros(3), jnp.array([0., 3e38, 0.]),
+          jnp.array([1., 3e38, 2.]), jnp.ones(3), jnp.full(3, 2.),
+          alpha_=alpha, sample_mask=mask, stop_target_gradients=False)
+      return jnp.sum(jnp.where(mask, errors, 0.))
+
+    value, gradient = self.variant(jax.value_and_grad(loss))(alpha)
+    # The ignored middle transition leaves errors [k + 2*k*k, 2*k, 2*k],
+    # where k = (1 - alpha)*rho + alpha*min(1, rho) = 2 - alpha.
+    k = 2. - alpha
+    np.testing.assert_allclose(value, 3. * k + 2. * k**2)
+    np.testing.assert_allclose(gradient, -3. - 4. * k)
 
 
 if __name__ == '__main__':

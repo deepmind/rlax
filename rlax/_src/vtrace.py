@@ -81,13 +81,20 @@ def vtrace(
   )
   chex.assert_equal_shape([v_tm1, v_t, r_t, discount_t, rho_tm1, sample_mask])
 
+  # Mask inputs before arithmetic: an unused nonfinite TD error can otherwise
+  # contaminate gradients even though the scan skips that error in the forward
+  # pass. Keep the original v_tm1 for the stopped-target gradient below.
+  masked_v_tm1, v_t, r_t, discount_t, rho_tm1, lambda_ = (
+      jnp.where(sample_mask, x, 0)
+      for x in (v_tm1, v_t, r_t, discount_t, rho_tm1, lambda_))
+
   # Clip importance sampling ratios.
   c_tm1 = jnp.minimum(1.0, rho_tm1) * lambda_
   clipped_rhos_tm1 = jnp.minimum(clip_rho_threshold, rho_tm1)
 
   # Compute the temporal difference errors.
   # pyrefly: ignore[unsupported-operation]
-  td_errors = clipped_rhos_tm1 * (r_t + discount_t * v_t - v_tm1)
+  td_errors = clipped_rhos_tm1 * (r_t + discount_t * v_t - masked_v_tm1)
 
   # Work backwards computing the td-errors.
   def _body(acc, xs):
@@ -154,6 +161,12 @@ def leaky_vtrace(
   )
   chex.assert_equal_shape([v_tm1, v_t, r_t, discount_t, rho_tm1, sample_mask])
 
+  # Mask before forming the TD errors and traces so skipped transitions cannot
+  # introduce nonfinite meta-gradients through alpha, lambda, or the ratios.
+  masked_v_tm1, v_t, r_t, discount_t, rho_tm1, lambda_ = (
+      jnp.where(sample_mask, x, 0)
+      for x in (v_tm1, v_t, r_t, discount_t, rho_tm1, lambda_))
+
   # Mix clipped and unclipped importance sampling ratios.
   c_tm1 = (
       (1 - alpha_) * rho_tm1 + alpha_ * jnp.minimum(1.0, rho_tm1)) * lambda_
@@ -163,7 +176,7 @@ def leaky_vtrace(
 
   # Compute the temporal difference errors.
   # pyrefly: ignore[unsupported-operation]
-  td_errors = clipped_rhos_tm1 * (r_t + discount_t * v_t - v_tm1)
+  td_errors = clipped_rhos_tm1 * (r_t + discount_t * v_t - masked_v_tm1)
 
   # Work backwards computing the td-errors.
   def _body(acc, xs):
